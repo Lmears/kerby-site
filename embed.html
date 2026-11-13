@@ -115,8 +115,11 @@
     border: 1px solid var(--kd-mid);
     border-radius: 5px;
     padding: 0 .5rem 0 .3rem;
+    /* The whole plate is the tempo's gesture, its BPM and padding too (demo.js). */
+    cursor: ns-resize;
+    touch-action: none;
+    user-select: none;
 }
-.kd-tempo span { opacity: .75; }
 .kd-tempo input {
     width: 2.1rem;
     height: 100%;
@@ -127,6 +130,7 @@
     font-variant-numeric: tabular-nums;
     cursor: ns-resize;
     touch-action: none;
+    user-select: text;
     -moz-appearance: textfield;
     appearance: textfield;
 }
@@ -1382,7 +1386,17 @@ function initDemo(root) {
         listen() {
             const el = this.element;
             let drag = null, lastTap = 0;
-            el.addEventListener('pointerdown', event => {
+            // Turning a knob from silence starts Play, so the change can be heard. Only a real change by a real
+            // gesture: a click that doesn't move it, a preset or Return Home don't, and a key held keeps playing
+            // under it. A page that starts Play its own way sets root.kbKnobsPlay to false.
+            const heard = handler => event => {
+                const before = this.value;
+                handler(event);
+                if (this.value === before || !event.isTrusted || playing || held.size || root.kbKnobsPlay === false) return;
+                unlockAudio();
+                start();
+            };
+            el.addEventListener('pointerdown', heard(event => {
                 if (event.button !== 0 || !root.classList.contains('kd-ready')) return;
                 el.setPointerCapture(event.pointerId);
                 const now = performance.now();
@@ -1392,33 +1406,33 @@ function initDemo(root) {
                 lastTap = now;
                 drag = { x: event.clientX, y: event.clientY, travel: 0, value: this.value, moved: false };
                 el.classList.add('kd-dragging');
-            });
-            el.addEventListener('pointermove', event => {
+            }));
+            el.addEventListener('pointermove', heard(event => {
                 if (!drag || !el.hasPointerCapture(event.pointerId)) return;
                 const travel = dragTravel(drag, event);
                 if (Math.abs(travel) > 3) { drag.moved = true; lastTap = 0; }
                 if (this.rate) this.set(drag.value + Math.round(travel / RATE_PX_PER_STEP));
                 else this.set(drag.value + travel * (this.max / GLITCH_PX_FULL_RANGE) * (event.shiftKey ? 0.25 : 1));
                 if (this.value === this.min || this.value === this.max) { drag.value = this.value; drag.travel = 0; }
-            });
+            }));
             const end = () => { drag = null; el.classList.remove('kd-dragging'); };
             el.addEventListener('pointerup', end);
             el.addEventListener('pointercancel', end);
             let wheel = 0;
-            el.addEventListener('wheel', event => {
+            el.addEventListener('wheel', heard(event => {
                 event.preventDefault();
                 wheel += event.deltaY;
                 while (Math.abs(wheel) >= 40) {
                     this.step(wheel < 0 ? 1 : -1);
                     wheel -= Math.sign(wheel) * 40;
                 }
-            }, { passive: false });
-            el.addEventListener('keydown', event => {
+            }), { passive: false });
+            el.addEventListener('keydown', heard(event => {
                 const direction = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[event.key];
                 if (direction) { event.preventDefault(); this.step(direction); }
                 else if (event.key === 'Home') { event.preventDefault(); this.set(this.min); }
                 else if (event.key === 'End') { event.preventDefault(); this.set(this.max); }
-            });
+            }));
         }
 
         draw() {
@@ -1852,8 +1866,15 @@ function initDemo(root) {
 
     // KerBy's value fields (slypork::InlineValueControl): drag the number up or down to change it,
     // measured from where the drag began, or click it to type. Arrows and the wheel step it by one.
+    // The whole plate drags, its BPM and padding too. Typing in the number keeps its selection; a
+    // press elsewhere on the plate leaves typing and starts a fresh drag.
     const BPM_PX_PER_STEP = 3;
     let tempoDrag = null;
+    tempoControl.title = tempoInput.title = 'Drag to change BPM. Double-click for the preset’s tempo';
+    // Two taps within 300 ms go back to the preset's own tempo, as a Knob's go home, not on dblclick,
+    // which iPhones don't send. Typing's first click arrives with the input focused, so that's counted
+    // too. A phone's click after the second tap can focus it again, and so can Chrome's selection
+    // just after it, hence the later blurs.
     let tempoTap = 0, tempoReset = false;
     tempoControl.addEventListener('pointerdown', event => {
         if (event.button !== 0) return;
@@ -3449,19 +3470,23 @@ each('[data-duck]', e => e.addEventListener('click', () => {
 const promptEl = $('.prompt');
 const kickRate = $('.kd-knob[data-param="KICK_RATE"]');
 let heardGroove = false, suggestedKickRate = false, triedKickRate = false;
-// Listen around the demo's own gesture handlers, so only a real value change starts Play: a click,
-// a preset, Return Home or a redraw doesn't. A key already held keeps playing under the adjustment.
-for (const type of ['pointerdown', 'pointermove', 'wheel', 'keydown']) {
-  let before;
-  kickRate.addEventListener(type, () => { before = kickRate.getAttribute('aria-valuenow'); }, true);
-  kickRate.addEventListener(type, () => {
-    if (kickRate.getAttribute('aria-valuenow') === before) return;
-    triedKickRate = true;
-    stopPointing();
-    startIfIdle();
-    showStatus();
-  });
-}
+// Turning any of the four knobs from silence starts Play, so the change can be heard (author, 13 Nov: all four, not
+// only Kick Rate). Here, not in demo.js, which does the same on slypork.net/kerby: this page's start does more
+// (startIfIdle()), so demo.js is told to leave it. Listen around the demo's own gesture handlers, so only a real
+// value change starts Play: a click, a preset, Return Home or a redraw doesn't. A key already held keeps playing
+// under the adjustment. Only Kick Rate counts as trying the knob the prompt suggests.
+root.kbKnobsPlay = false;
+for (const knob of $$('.kd-knob[data-param$="_RATE"], .kd-knob[data-param$="_GLITCH"]'))
+  for (const type of ['pointerdown', 'pointermove', 'wheel', 'keydown']) {
+    let before;
+    knob.addEventListener(type, () => { before = knob.getAttribute('aria-valuenow'); }, true);
+    knob.addEventListener(type, () => {
+      if (knob.getAttribute('aria-valuenow') === before) return;
+      if (knob === kickRate) { triedKickRate = true; stopPointing(); }
+      startIfIdle();
+      showStatus();
+    });
+  }
 let nudged = coarse ? null : $$('.kd-key')[9]; // A, the note Play holds (A0, as in KerBy)
 nudged?.classList.add('nudge');
 let saying = '', sayUntil = 0, sayTimer = 0;
@@ -3925,7 +3950,6 @@ new IntersectionObserver(entries => {
   if (entries[0].isIntersecting) tour.play().catch(() => {}); else tour.pause();
 }, { threshold: .25 }).observe(tour);
 $('.kd input').inputMode = 'numeric'; // the sanitizer strips the attribute that gives phones a number pad
-$('.kd-tempo').title = $('.kd-tempo input').title = 'Drag to change BPM. Double-click for the preset’s tempo';
 // The tempo gesture captures the plate only when dragging, leaving text selection and typing alone.
 const tempoPlate = $('.kd-tempo');
 tempoPlate.addEventListener('gotpointercapture', () => tempoPlate.classList.add('dragging'));
