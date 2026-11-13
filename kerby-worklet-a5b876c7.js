@@ -668,4 +668,37 @@ class KerByWorklet extends AudioWorkletProcessor {
     }
 }
 
+
+{
+    const HEAVY_MS = 3, WINDOW = 75, ASLEEP_MS = 100, BEHIND_MS = 3;
+    const P = KerByWorklet.prototype, process = P.process, apply = P.applyMessage;
+    P.applyMessage = function (message) {
+        if (message.type !== 'preset' || !this.meter) return apply.call(this, message);
+        const from = Date.now();
+        const result = apply.call(this, message);
+        this.meter.load = Math.max(this.meter.load, Date.now() - from);
+        return result;
+    };
+    P.process = function (inputs, outputs) {
+        const from = Date.now();
+        const m = this.meter || (this.meter = { heavy: 0, longest: 0, load: 0, dropped: 0, lost: 0, blocks: 0, start: from, last: from, least: Infinity, before: null });
+        // Asleep and woken (the page suspends the context when it's quiet): the clock starts again.
+        if (from - m.last > ASLEEP_MS) { m.blocks = 0; m.start = from; m.least = Infinity; m.before = null; }
+        m.last = from;
+        const result = process.call(this, inputs, outputs);
+        const took = Date.now() - from;
+        if (took >= HEAVY_MS) m.heavy++;
+        if (took > m.longest) m.longest = took;
+        const ahead = from - m.start - ++m.blocks * (128000 / sampleRate);
+        if (ahead < m.least) m.least = ahead;
+        if (m.blocks % WINDOW === 0) {
+            if (m.before !== null && m.least - m.before > BEHIND_MS) { m.dropped++; m.lost += m.least - m.before; }
+            m.before = m.least;
+            m.least = Infinity;
+            if (m.blocks % (WINDOW * 5) === 0)
+                this.port.postMessage({ type: 'heavy', heavy: m.heavy, longest: m.longest, load: m.load, dropped: m.dropped, lost: m.lost });
+        }
+        return result;
+    };
+}
 registerProcessor('kerby', KerByWorklet);
