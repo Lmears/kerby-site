@@ -164,6 +164,8 @@ class KerByEngine {
 // sounding starts it from the top of the bar, as pressing a note at bar 1 with Live playing does,
 // so a patch whose modulators follow the transport (Dubstep's wobble) plays the same whenever the
 // key goes down, instead of carrying on from wherever its free-running LFOs had got to.
+// A preset chosen under a key or Play starts from the top too, as if the key went down again
+// (fromTheTop()).
 //
 // engine.js and kerby.wasm are built in the slypork-plugins repository (web/kerby-demo, `build.sh
 // install`); don't edit them here.
@@ -251,6 +253,9 @@ class Doubler {
         line.copyWithin(0, input.length);
     }
 }
+// What the engine takes to fade the last patch's rhythm out once its note is let go, in blocks: 20 ms,
+// KerBy's kPresetFadeSeconds.
+const FADE_BLOCKS = Math.ceil(0.02 * sampleRate / BLOCK);
 
 class KerByWorklet extends AudioWorkletProcessor {
     constructor(options) {
@@ -262,6 +267,7 @@ class KerByWorklet extends AudioWorkletProcessor {
         this.ringsDue = false; // the rings to send after the next block: a new patch's routes have run once by then
         this.playing = false; // the page's Play
         this.held = new Set();
+        this.velocity = 100;  // the last key's, for the keys fromTheTop() puts down again
         this.bpm = 128;
         this.heard = 0;       // messages from the page, for it to match a quiet against what it's sent
         this.quietBlocks = 0; // silent blocks since the last sound or message
@@ -318,15 +324,75 @@ class KerByWorklet extends AudioWorkletProcessor {
 
     handle(message) {
         if (this.switching) {
-            if (message.type === 'preset') this.switching = { message, after: [] };
+            if (this.switching.startIn) this.whileLetGo(message);
+            else if (message.type === 'preset') this.switching.message = message; // the latest one wins
             else this.switching.after.push(message);
             return;
         }
-        if (message.type === 'preset' && this.engine.beginPresetChange()) {
-            this.switching = { message, after: [] };
+        if (message.type !== 'preset') return this.applyMessage(message);
+        // Under sound the engine fades the last patch out first (followSwitch()); in silence it goes straight in.
+        if (this.engine.beginPresetChange()) this.switching = { message, after: [] };
+        else {
+            this.applyMessage(message);
+            this.fromTheTop();
+        }
+    }
+
+    /** A preset that went in under a key or Play starts from the top of its bar, as it does when the key
+        goes down. The engine starts the LFOs a patch restarts with the note (Dubstep's wobble) as the
+        patch loads, but its clock would carry on from the last patch's bar and tempo, leaving the two out
+        of step until the key was let go and pressed again. So that is what's done: every key let go and
+        the clock stopped, which also fades out the last patch's rhythm (the engine carries it on only
+        while a note is held), and FADE_BLOCKS later the clock started from the top with the keys down
+        again. Measured against letting go and pressing again by hand: the same samples, where a patch
+        has nothing random. `after` is what the page sent while the last patch faded. */
+    fromTheTop(after = []) {
+        if (this.playing || this.held.size) {
+            for (const note of this.held) this.engine.noteOff(note);
+            this.engine.setTransport(this.bpm, false);
+            this.switching = { startIn: FADE_BLOCKS };
+        }
+        for (const waited of after) this.handle(waited);
+    }
+
+    /** The page's messages while everything is let go (fromTheTop()): a key or Play only changes what
+        goes down when the clock starts, and another preset goes straight in, nothing sounding to fade. */
+    whileLetGo(message) {
+        switch (message.type) {
+            case 'note-on':
+                this.held.add(message.note);
+                this.velocity = message.velocity ?? 100;
+                this.scopeBlocksLeft = Infinity;
+                break;
+            case 'note-off':
+                this.held.delete(message.note);
+                this.settleScopes();
+                break;
+            case 'transport':
+                this.bpm = message.bpm;
+                this.playing = message.playing;
+                this.settleScopes();
+                break;
+            default: this.applyMessage(message);
+        }
+    }
+
+    /** A preset's change, a block at a time: the patch goes in once the engine has faded the last one out,
+        and what was held starts it from the top FADE_BLOCKS after that (fromTheTop()). */
+    followSwitch() {
+        const switching = this.switching;
+        if (switching.startIn) {
+            if (--switching.startIn > 0) return;
+            this.switching = null;
+            this.runClock();
+            for (const note of this.held) this.engine.noteOn(note, this.velocity);
             return;
         }
-        this.applyMessage(message);
+        if (!this.engine.presetChangeReady()) return;
+        this.switching = null;
+        this.applyMessage(switching.message);
+        this.engine.finishPresetChange();
+        this.fromTheTop(switching.after);
     }
 
     applyMessage(message) {
@@ -355,8 +421,9 @@ class KerByWorklet extends AudioWorkletProcessor {
             // the last bar draw.
             case 'note-on':
                 this.held.add(message.note);
+                this.velocity = message.velocity ?? 100;
                 this.runClock();
-                engine.noteOn(message.note, message.velocity ?? 100);
+                engine.noteOn(message.note, this.velocity);
                 this.scopeBlocksLeft = Infinity;
                 break;
             case 'note-off':
@@ -454,13 +521,7 @@ class KerByWorklet extends AudioWorkletProcessor {
     }
 
     process(inputs, outputs) {
-        if (this.switching && this.engine.presetChangeReady()) {
-            const { message, after } = this.switching;
-            this.switching = null;
-            this.applyMessage(message);
-            this.engine.finishPresetChange();
-            for (const waited of after) this.handle(waited);
-        }
+        if (this.switching) this.followSwitch();
         const output = outputs[0];
         if (!this.engine || output[0].length !== BLOCK) return true;
         if (this.owed && this.owing()) return true;
@@ -673,6 +734,7 @@ class KerByWorklet extends AudioWorkletProcessor {
     const HEAVY_MS = 3, WINDOW = 75, ASLEEP_MS = 100, BEHIND_MS = 3;
     const P = KerByWorklet.prototype, process = P.process, apply = P.applyMessage;
     P.applyMessage = function (message) {
+        if (message.type === 'note-on' && this.meter) this.meter.noteDue = true; // its first hit is in the next block
         if (message.type !== 'preset' || !this.meter) return apply.call(this, message);
         const from = Date.now();
         const result = apply.call(this, message);
@@ -681,14 +743,19 @@ class KerByWorklet extends AudioWorkletProcessor {
     };
     P.process = function (inputs, outputs) {
         const from = Date.now();
-        const m = this.meter || (this.meter = { heavy: 0, longest: 0, load: 0, dropped: 0, lost: 0, blocks: 0, start: from, last: from, least: Infinity, before: null });
+        const m = this.meter || (this.meter = { heavy: 0, longest: 0, first: -1, note: 0, noteDue: false, load: 0, dropped: 0, lost: 0, blocks: 0, start: from, last: from, least: Infinity, before: null });
         // Asleep and woken (the page suspends the context when it's quiet): the clock starts again.
         if (from - m.last > ASLEEP_MS) { m.blocks = 0; m.start = from; m.least = Infinity; m.before = null; }
         m.last = from;
         const result = process.call(this, inputs, outputs);
         const took = Date.now() - from;
-        if (took >= HEAVY_MS) m.heavy++;
-        if (took > m.longest) m.longest = took;
+        // The first call of all is the browser's start-up (5 ms on an M1, nothing playing): told apart, not counted.
+        if (m.first < 0) m.first = took;
+        else {
+            if (took >= HEAVY_MS) m.heavy++;
+            if (took > m.longest) m.longest = took;
+        }
+        if (m.noteDue) { m.noteDue = false; if (took > m.note) m.note = took; }
         const ahead = from - m.start - ++m.blocks * (128000 / sampleRate);
         if (ahead < m.least) m.least = ahead;
         if (m.blocks % WINDOW === 0) {
@@ -696,7 +763,7 @@ class KerByWorklet extends AudioWorkletProcessor {
             m.before = m.least;
             m.least = Infinity;
             if (m.blocks % (WINDOW * 5) === 0)
-                this.port.postMessage({ type: 'heavy', heavy: m.heavy, longest: m.longest, load: m.load, dropped: m.dropped, lost: m.lost });
+                this.port.postMessage({ type: 'heavy', heavy: m.heavy, longest: m.longest, first: m.first, note: m.note, load: m.load, dropped: m.dropped, lost: m.lost });
         }
         return result;
     };
