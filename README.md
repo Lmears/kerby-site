@@ -2,11 +2,11 @@
 
 The files GitHub Pages serves for KerBy's page. Everything here is generated: don't edit it.
 
-The source is `kerby-promo/reels/shop/` (`page-handheld.html`, built by `site.py`). To change the page, change it
+The source is `slypork-plugins/marketing/shop/kerby/` (`page-handheld.html`, built by `site.py`). To change the page, change it
 there, then:
 
 ```sh
-python3 reels/shop/site.py --to ../kerby-site    # from kerby-promo
+python3 shop/kerby/site.py --to ../../kerby-site    # from slypork-plugins/marketing
 ```
 
 and commit and push here.
