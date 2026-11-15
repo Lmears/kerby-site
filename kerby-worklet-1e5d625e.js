@@ -1,4 +1,4 @@
-// KerBy's engine for kerby.slypork.net, built by kerby-promo/reels/shop/site.py from engine.js and worklet.js. Don't edit it.
+// KerBy's engine for kerby.slypork.net, built by slypork-plugins/marketing/shop/kerby/site.py from engine.js and worklet.js. Don't edit it.
 // The KerBy web engine's JavaScript side: instantiates build/kerby.wasm and wraps its C functions
 // (engine/kerby_web.cpp). Written for an AudioWorkletGlobalScope, which has no fetch, DOM or
 // (in some browsers) TextDecoder, so it takes the module's bytes and decodes strings itself.
