@@ -415,7 +415,7 @@ h1 { margin-top: 10px; }
 .rating { margin-top: 8px; color: var(--light); font-size: 15px; }
 .rating::before { content: "★★★★★ "; letter-spacing: .08em; color: var(--pink); }
 /* What buyers said, written in by handheld.py (reviews.json), under the line whose count links to every review. */
-.quotes { margin-top: 10px; max-width: 34em; display: grid; gap: 8px; }
+.quotes { margin-top: 10px; max-width: 34em; display: grid; gap: 12px; }
 /* The name on a line of its own under the quote (author, 11 Nov), except on a computer, where there's no room on the
    title for two quotes' names and the gang: there each follows its quote (23 Nov), and "Can't afford it?" its line. */
 .quotes figure { margin: 0; color: var(--pale); font-size: 15px; line-height: 1.42; text-wrap: balance; }
@@ -424,7 +424,7 @@ h1 { margin-top: 10px; }
 .quotes figcaption::before { content: "– "; }
 @media (min-width: 1000px) {
   .title .facts [data-paid] br { display: none; }
-  .title .quotes { max-width: 600px; gap: 4px; }
+  .title .quotes { max-width: 600px; }
   .title .quotes blockquote, .title .quotes figcaption { display: inline; }
   .title .quotes figcaption { white-space: nowrap; }
   .title .quotes figcaption::before { content: " – "; }
